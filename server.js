@@ -244,54 +244,213 @@ function parseRecentLogs(maxEntries = 100) {
                 let sessionId = null;
 
                 const data = parsed['1'];
+                
+                // Also check for structured data in other fields
+                const toolData = parsed['2'] || {};
+                const contextData = parsed['3'] || {};
+
                 if (typeof data === 'string') {
                     // Extract session ID if present
                     const sessionMatch = data.match(/sessionId=([^\s]+)/);
                     sessionId = sessionMatch ? sessionMatch[1] : null;
 
-                    // Tool start - more descriptive with input preview
+                    // Tool start - extract specific tool parameters
                     if (data.includes('embedded run tool start')) {
                         const toolMatch = data.match(/tool=(\w+)/);
                         const toolName = toolMatch ? toolMatch[1] : 'unknown';
-                        const toolDesc = getToolDescription(toolName);
-                        message = `Tool: ${toolDesc}`;
+                        
+                        // Parse tool-specific parameters
+                        let toolDetail = '';
+                        
+                        if (toolName === 'exec' || toolName === 'process') {
+                            const cmdMatch = data.match(/command[=:]"?([^"]{1,200})"?/) || 
+                                           data.match(/cmd[=:]"?([^"]{1,200})"?/);
+                            if (cmdMatch) {
+                                toolDetail = cmdMatch[1].trim();
+                                message = `exec: ${toolDetail}`;
+                            } else {
+                                message = `exec: <command>`;
+                            }
+                        } else if (toolName === 'read' || toolName === 'Read') {
+                            const pathMatch = data.match(/path[=:]"?([^"\s]{1,150})"?/) ||
+                                            data.match(/file[=:]"?([^"\s]{1,150})"?/);
+                            if (pathMatch) {
+                                toolDetail = pathMatch[1];
+                                message = `read: ${toolDetail}`;
+                            } else {
+                                message = `read: <file>`;
+                            }
+                        } else if (toolName === 'write' || toolName === 'Write') {
+                            const pathMatch = data.match(/path[=:]"?([^"\s]{1,150})"?/) ||
+                                            data.match(/file[=:]"?([^"\s]{1,150})"?/);
+                            if (pathMatch) {
+                                toolDetail = pathMatch[1];
+                                message = `write: ${toolDetail}`;
+                            } else {
+                                message = `write: <file>`;
+                            }
+                        } else if (toolName === 'edit' || toolName === 'Edit') {
+                            const pathMatch = data.match(/path[=:]"?([^"\s]{1,150})"?/);
+                            if (pathMatch) {
+                                toolDetail = pathMatch[1];
+                                message = `edit: ${toolDetail}`;
+                            } else {
+                                message = `edit: <file>`;
+                            }
+                        } else if (toolName === 'browser') {
+                            const actionMatch = data.match(/action[=:]"?(\w+)"?/);
+                            const urlMatch = data.match(/url[=:]"?([^"\s]{1,100})"?/);
+                            const action = actionMatch ? actionMatch[1] : 'action';
+                            const url = urlMatch ? urlMatch[1] : '';
+                            if (url) {
+                                message = `browser: ${action} ${url}`;
+                            } else {
+                                message = `browser: ${action}`;
+                            }
+                        } else if (toolName === 'web_fetch') {
+                            const urlMatch = data.match(/url[=:]"?([^"\s]{1,100})"?/);
+                            if (urlMatch) {
+                                message = `web_fetch: ${urlMatch[1]}`;
+                            } else {
+                                message = `web_fetch: <url>`;
+                            }
+                        } else if (toolName === 'sessions_spawn') {
+                            const taskMatch = data.match(/task[=:]"?([^"]{1,100})"?/) ||
+                                            data.match(/label[=:]"?([^"]{1,100})"?/);
+                            if (taskMatch) {
+                                message = `spawn: ${taskMatch[1]}`;
+                            } else {
+                                message = `spawn: <subagent>`;
+                            }
+                        } else if (toolName === 'tts' || toolName === 'whisper' || toolName === 'transcribe') {
+                            const textMatch = data.match(/text[=:]"?([^"]{1,80})"?/);
+                            if (textMatch) {
+                                message = `${toolName}: "${textMatch[1]}..."`;
+                            } else {
+                                message = `${toolName}: audio processing`;
+                            }
+                        } else if (toolName === 'image') {
+                            const promptMatch = data.match(/prompt[=:]"?([^"]{1,80})"?/);
+                            const pathMatch = data.match(/image[=:]"?([^"\s]{1,100})"?/);
+                            if (promptMatch) {
+                                message = `image: ${promptMatch[1]}`;
+                            } else if (pathMatch) {
+                                message = `image: ${pathMatch[1]}`;
+                            } else {
+                                message = `image: analysis`;
+                            }
+                        } else {
+                            // Generic tool
+                            const toolDesc = getToolDescription(toolName);
+                            message = `${toolName}: started`;
+                            
+                            // Try to extract any input parameter
+                            const inputMatch = data.match(/input[=:]"?([^"]{1,100})"?/);
+                            if (inputMatch) {
+                                toolDetail = inputMatch[1].replace(/\\n/g, ' ').trim();
+                            }
+                        }
+                        
                         type = 'tool';
                         level = 'info';
-
-                        // Try to extract tool input for more context
-                        const inputMatch = data.match(/input="([^"]{1,200})"/);
-                        if (inputMatch) {
-                            detail = inputMatch[1].replace(/\\n/g, ' ').trim();
-                        }
+                        detail = toolDetail || null;
                     }
                     // Tool end - show result preview
                     else if (data.includes('embedded run tool end')) {
                         const toolMatch = data.match(/tool=(\w+)/);
                         const toolName = toolMatch ? toolMatch[1] : 'unknown';
-                        const toolDesc = getToolDescription(toolName);
                         const durationMatch = data.match(/durationMs=(\d+)/);
                         const duration = durationMatch ? `${(parseInt(durationMatch[1]) / 1000).toFixed(1)}s` : '';
-                        message = `Completed: ${toolDesc}${duration ? ` (${duration})` : ''}`;
+                        
+                        // Check if it was an error
+                        const errorMatch = data.match(/error[=:]"?([^"]{1,100})"?/);
+                        if (errorMatch) {
+                            message = `${toolName}: failed`;
+                            detail = errorMatch[1];
+                            level = 'error';
+                        } else {
+                            message = `${toolName}: completed${duration ? ` (${duration})` : ''}`;
+                            level = 'success';
+                        }
                         type = 'tool_complete';
-                        level = 'success';
+                    }
+                    // Whisper/transcription detection
+                    else if (data.includes('whisper') || data.includes('transcrib') || data.includes('audio processing')) {
+                        const textMatch = data.match(/text[=:]"?([^"]{1,150})"?/) ||
+                                        data.match(/transcript[=:]"?([^"]{1,150})"?/);
+                        if (textMatch) {
+                            message = `Transcription`;
+                            detail = `"${textMatch[1]}"`;
+                            type = 'transcription';
+                            level = 'success';
+                        } else {
+                            message = `Audio processing`;
+                            type = 'transcription';
+                            level = 'info';
+                        }
                     }
                     // Run start - show model and channel with user message
                     else if (data.includes('embedded run start')) {
                         const modelMatch = data.match(/model=([^\s]+)/);
                         const channelMatch = data.match(/messageChannel=(\w+)/);
                         const thinkingMatch = data.match(/thinking=(\w+)/);
+                        const runIdMatch = data.match(/runId=([^\s]+)/);
 
                         const model = modelMatch ? modelMatch[1] : 'unknown';
                         const channel = channelMatch ? channelMatch[1] : '';
                         const thinking = thinkingMatch ? thinkingMatch[1] : 'off';
+                        const runId = runIdMatch ? runIdMatch[1] : null;
 
                         let channelLabel = channel ? ` via ${channel.charAt(0).toUpperCase() + channel.slice(1)}` : '';
+                        
+                        // Try to get the triggering message by looking back in recent logs
+                        let triggerText = null;
+                        if (sessionId) {
+                            // Look for recent user message in same session
+                            for (let j = i + 1; j < Math.min(i + 20, lines.length); j++) {
+                                try {
+                                    const prevLine = JSON.parse(lines[j]);
+                                    const prevData = prevLine['1'];
+                                    if (typeof prevData === 'string' && prevData.includes(sessionId)) {
+                                        // Look for user message patterns
+                                        const userTextMatch = prevData.match(/(?:message|text|content)="([^"]{1,150})"/);
+                                        if (userTextMatch && !prevData.includes('bot response') && !prevData.includes('assistant')) {
+                                            triggerText = userTextMatch[1].replace(/\\n/g, ' ').trim();
+                                            break;
+                                        }
+                                    }
+                                } catch (e) { /* skip */ }
+                            }
+                        }
+                        
+                        // Check if this is a sub-agent by looking at sessionId
+                        let agentLabel = null;
+                        if (sessionId && sessionId.includes('subagent')) {
+                            // Try to get label from sessions.json
+                            const sessions = getActiveSessions();
+                            const session = sessions.find(s => s.sessionId === sessionId);
+                            if (session && session.label) {
+                                agentLabel = session.label;
+                            }
+                        }
+
                         message = `Request started: ${model}${channelLabel}`;
+                        if (agentLabel) {
+                            message += ` [${agentLabel}]`;
+                        }
                         type = 'request_start';
                         level = 'info';
 
+                        // Build detail string with available context
+                        let detailParts = [];
+                        if (triggerText) {
+                            detailParts.push(`"${triggerText}"`);
+                        }
                         if (thinking && thinking !== 'none' && thinking !== 'off') {
-                            detail = `Reasoning: ${thinking}`;
+                            detailParts.push(`Reasoning: ${thinking}`);
+                        }
+                        if (detailParts.length > 0) {
+                            detail = detailParts.join(' • ');
                         }
                     }
                     // Run done - show duration and token usage
@@ -334,22 +493,22 @@ function parseRecentLogs(maxEntries = 100) {
                     }
                     // Bot/Agent response
                     else if (data.includes('sending message') || data.includes('bot response') || data.includes('assistant message')) {
-                        const textMatch = data.match(/text="([^"]{1,300})"/);
+                        const textMatch = data.match(/text="([^"]+)"/) || data.match(/content="([^"]+)"/);
                         const toMatch = data.match(/to=(\w+)/);
 
                         if (textMatch) {
                             message = `Response sent`;
-                            detail = textMatch[1].replace(/\\n/g, ' ').substring(0, 200);
+                            detail = textMatch[1].replace(/\\n/g, ' ').substring(0, 300);
                             type = 'bot_response';
                             level = 'success';
                         }
                     }
                     // Thinking/Reasoning content
-                    else if (data.includes('thinking content') || data.includes('reasoning') || data.includes('chain of thought')) {
-                        const thinkingMatch = data.match(/content="([^"]{1,500})"/);
+                    else if (data.includes('thinking content') || data.includes('reasoning') || data.includes('chain of thought') || data.includes('embedded thinking')) {
+                        const thinkingMatch = data.match(/content="([^"]+)"/) || data.match(/thinking="([^"]+)"/);
                         if (thinkingMatch) {
                             message = `Reasoning`;
-                            detail = thinkingMatch[1].replace(/\\n/g, ' ').substring(0, 300);
+                            detail = thinkingMatch[1].replace(/\\n/g, ' ').substring(0, 400);
                             type = 'thinking';
                             level = 'info';
                         }
@@ -697,13 +856,46 @@ function getStatus() {
     
     let currentTask = null;
     if (activities.length > 0) {
-        const recent = activities.find(a => 
-            !a.message.includes('status') && 
-            a.message.length > 10
-        );
-        if (recent) {
-            currentTask = { description: recent.message };
+        // Find the most recent meaningful activity for the "Current Task" display
+        // We look for activities from the last 2 minutes
+        const now = Date.now();
+        const meaningfulRecent = activities.find(a => {
+            const age = now - new Date(a.timestamp).getTime();
+            if (age > 120000) return false; // Ignore anything older than 2 mins
+
+            // Prioritize specific activity types
+            return a.type === 'tool' || 
+                   a.type === 'thinking' || 
+                   a.type === 'transcription' ||
+                   a.type === 'user_message';
+        });
+
+        if (meaningfulRecent) {
+            let taskDesc = meaningfulRecent.message;
+            if (meaningfulRecent.type === 'tool' && meaningfulRecent.detail) {
+                // If it's a tool, show the detail too
+                taskDesc = `${meaningfulRecent.message}`;
+            }
+            currentTask = { 
+                description: taskDesc,
+                type: meaningfulRecent.type,
+                timestamp: meaningfulRecent.timestamp
+            };
+        } else {
+            // Check if we just completed something
+            const completed = activities.find(a => {
+                const age = now - new Date(a.timestamp).getTime();
+                return age < 30000 && (a.type === 'request_complete' || a.type === 'bot_response');
+            });
+            
+            if (completed) {
+                currentTask = { description: 'Waiting for user...', type: 'idle' };
+            } else {
+                currentTask = { description: 'Idle', type: 'idle' };
+            }
         }
+    } else {
+        currentTask = { description: 'Idle', type: 'idle' };
     }
     
     const isProcessing = activities.length > 0 && 

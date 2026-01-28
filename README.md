@@ -141,7 +141,7 @@ MAX_DASHBOARD_NO_AUTH=true npm start
 - **Model** - AI model being used (e.g., claude-sonnet-4-5, claude-opus-4-5)
 - **State** - Processing state (Active/Idle)
 - **Reasoning** - Whether extended thinking is enabled
-- **Current Task** - Most recent task description
+- **Current Task** - Shows current activity (tool being used, transcription, user message) or "Waiting for user..." / "Idle"
 
 ### Resources
 - **CPU** - Real-time CPU usage with sparkline chart
@@ -159,12 +159,29 @@ Table showing all registered sessions:
 - Last update time
 
 ### System Activity
-Detailed event log showing:
-- Tool executions (Shell, Read, Write, Edit, etc.)
-- Request start/completion with duration and token usage
-- User messages and bot responses
-- Reasoning/thinking content (when available)
-- Errors and warnings
+Detailed event log with rich context:
+
+**Tool Executions** - Shows tool name with relevant parameters:
+- `exec: <command>` - Shell commands being executed
+- `read: <filepath>` - Files being read
+- `write: <filepath>` - Files being written
+- `edit: <filepath>` - Files being edited
+- `browser: <action> <url>` - Browser automation
+- `web_fetch: <url>` - URL fetching
+- `spawn: <task>` - Sub-agent spawning
+- `image: <prompt/path>` - Image analysis or generation
+- `whisper/tts: <text>` - Audio transcription and speech
+
+**Request Tracking**:
+- Request start with model, channel (WhatsApp, Telegram, etc.), and reasoning mode
+- Sub-agent labels when applicable
+- Request completion with duration and token usage (input/output)
+
+**Other Events**:
+- User messages and bot responses with content preview
+- Reasoning/thinking content (extended thinking output)
+- Audio transcriptions with transcript text
+- Errors with details
 - Session state changes
 
 ## API Endpoints
