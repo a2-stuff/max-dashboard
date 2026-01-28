@@ -6,6 +6,8 @@ class MaxDashboard {
         this.isConnected = false;
         this.cpuHistory = [];
         this.maxHistoryPoints = 20;
+        this.sortColumn = 'updated';
+        this.sortDirection = 'desc';
         this.init();
     }
 
@@ -14,8 +16,74 @@ class MaxDashboard {
             this.clearActivityLog();
         });
 
+        // Add sort handlers to table headers
+        ['status', 'tokens', 'messages', 'created', 'updated'].forEach(col => {
+            const header = document.getElementById(`sort-${col}`);
+            if (header) {
+                header.addEventListener('click', () => this.setSortColumn(col));
+                header.style.cursor = 'pointer';
+            }
+        });
+
+        // Add click handler for truncated messages
+        document.getElementById('activityLog').addEventListener('click', (e) => {
+            const messageDetail = e.target.closest('.message-detail');
+            if (messageDetail && messageDetail.hasAttribute('data-full-text')) {
+                const fullText = messageDetail.getAttribute('data-full-text');
+                const title = messageDetail.getAttribute('data-title') || 'Message Detail';
+                // Decode HTML entities
+                const textarea = document.createElement('textarea');
+                textarea.innerHTML = fullText;
+                showMessageModal(textarea.value, title);
+            }
+        });
+
         this.startPolling();
         this.fetchData();
+    }
+
+    setSortColumn(column) {
+        if (this.sortColumn === column) {
+            this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            this.sortColumn = column;
+            this.sortDirection = 'desc';
+        }
+        this.fetchData(); // Refresh to apply sorting
+    }
+
+    sortSessions(sessions) {
+        const col = this.sortColumn;
+        const dir = this.sortDirection === 'asc' ? 1 : -1;
+
+        return sessions.sort((a, b) => {
+            let aVal, bVal;
+
+            switch(col) {
+                case 'status':
+                    aVal = a.status || 'idle';
+                    bVal = b.status || 'idle';
+                    return aVal.localeCompare(bVal) * dir;
+                case 'tokens':
+                    aVal = a.tokens || 0;
+                    bVal = b.tokens || 0;
+                    return (aVal - bVal) * dir;
+                case 'messages':
+                    aVal = a.messages || 0;
+                    bVal = b.messages || 0;
+                    return (aVal - bVal) * dir;
+                case 'created':
+                    aVal = a.created === '--' ? 0 : new Date(a.created).getTime();
+                    bVal = b.created === '--' ? 0 : new Date(b.created).getTime();
+                    return (aVal - bVal) * dir;
+                case 'updated':
+                    aVal = a.updated === '--' ? 0 : new Date(a.updated).getTime();
+                    bVal = b.updated === '--' ? 0 : new Date(b.updated).getTime();
+                    return (aVal - bVal) * dir;
+                default:
+                    return 0;
+            }
+        });
     }
 
     startPolling() {
@@ -36,6 +104,7 @@ class MaxDashboard {
             }
 
             this.updateSystemResources(data.system);
+            this.updateGatewayProcess(data.gateway);
             this.updateAgentsList(data.activeSessions);
             this.updateCurrentStatus(data);
             this.updateActivityLog(data.activityLog);
@@ -100,6 +169,31 @@ class MaxDashboard {
         }
     }
 
+    updateGatewayProcess(gateway) {
+        if (!gateway || !gateway.process) return;
+
+        const proc = gateway.process;
+        const pidEl = document.getElementById('gatewayPid');
+        const cpuEl = document.getElementById('gatewayCpu');
+        const memEl = document.getElementById('gatewayMem');
+        const rssEl = document.getElementById('gatewayRss');
+        const uptimeEl = document.getElementById('gatewayUptime');
+
+        if (proc.running) {
+            if (pidEl) pidEl.textContent = `PID: ${proc.pid}`;
+            if (cpuEl) cpuEl.textContent = `${proc.cpu}%`;
+            if (memEl) memEl.textContent = `${proc.memory}%`;
+            if (rssEl) rssEl.textContent = proc.rss;
+            if (uptimeEl) uptimeEl.textContent = proc.uptime;
+        } else {
+            if (pidEl) pidEl.textContent = 'Not running';
+            if (cpuEl) cpuEl.textContent = '--';
+            if (memEl) memEl.textContent = '--';
+            if (rssEl) rssEl.textContent = '--';
+            if (uptimeEl) uptimeEl.textContent = '--';
+        }
+    }
+
     updateCpuChart(cpu) {
         this.cpuHistory.push(cpu);
         if (this.cpuHistory.length > this.maxHistoryPoints) {
@@ -144,13 +238,29 @@ class MaxDashboard {
         const countEl = document.getElementById('totalSessions');
 
         if (!sessions || sessions.length === 0) {
-            container.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-slate-500 text-sm">No active agents</td></tr>';
+            container.innerHTML = '<tr><td colspan="7" class="px-4 py-4 text-center text-slate-500 text-sm">No active agents</td></tr>';
             countEl.textContent = '0';
             return;
         }
 
+        // Apply sorting
+        sessions = this.sortSessions([...sessions]);
+
         countEl.textContent = sessions.length;
         container.innerHTML = '';
+
+        // Update sort indicators
+        ['status', 'tokens', 'messages', 'created', 'updated'].forEach(col => {
+            const header = document.getElementById(`sort-${col}`);
+            if (header) {
+                const indicator = header.querySelector('.sort-indicator');
+                if (this.sortColumn === col) {
+                    indicator.textContent = this.sortDirection === 'asc' ? ' ▲' : ' ▼';
+                } else {
+                    indicator.textContent = '';
+                }
+            }
+        });
 
         sessions.forEach(session => {
             const row = document.createElement('tr');
@@ -162,6 +272,7 @@ class MaxDashboard {
             const model = session.model?.split('/').pop() || 'unknown';
             const tokens = this.formatNumber(session.tokens || 0);
             const messages = session.messages || 0;
+            const created = session.created || '--';
             const updated = session.updated || '--';
 
             // Status badge classes - bigger and more visible
@@ -178,6 +289,7 @@ class MaxDashboard {
                 <td class="px-4 py-2.5 text-slate-500 hidden sm:table-cell">${model}</td>
                 <td class="px-4 py-2.5 text-right font-medium">${tokens}</td>
                 <td class="px-4 py-2.5 text-right text-slate-400 hidden md:table-cell">${messages}</td>
+                <td class="px-4 py-2.5 text-right text-slate-500 text-xs hidden lg:table-cell">${created}</td>
                 <td class="px-4 py-2.5 text-right text-slate-500 hidden sm:table-cell">${updated}</td>
             `;
 
@@ -310,6 +422,11 @@ class MaxDashboard {
                     colorClass = 'text-purple-400';
                     bgClass = 'bg-purple-500/5';
                     break;
+                case 'assistant':
+                    icon = 'chat_bubble';
+                    colorClass = 'text-green-400';
+                    bgClass = 'bg-green-500/5';
+                    break;
                 case 'thinking':
                     icon = 'psychology';
                     colorClass = 'text-amber-400';
@@ -352,11 +469,36 @@ class MaxDashboard {
             // Build the entry HTML
             let detailHtml = '';
             if (activity.detail) {
+                const isClickable = activity.type === 'assistant' || activity.type === 'request_start' || activity.type === 'user_message';
+                const maxChars = 150; // Roughly 3 lines
+                const needsTruncate = isClickable && activity.detail.length > maxChars;
+                const displayText = needsTruncate ? activity.detail.substring(0, maxChars) + '...' : activity.detail;
+                const cursorClass = isClickable ? 'cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-colors' : '';
+
+                // Determine modal title based on activity type
+                let modalTitle = 'Message Detail';
+                if (activity.type === 'assistant') modalTitle = 'Assistant Reply';
+                else if (activity.type === 'request_start') modalTitle = 'Request Details';
+                else if (activity.type === 'user_message') modalTitle = 'User Message';
+
                 detailHtml = `
-                    <div class="mt-1.5 ml-7 sm:ml-8 pl-3 border-l-2 border-slate-200 dark:border-slate-700">
-                        <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-mono break-all leading-relaxed">${this.escapeHtml(activity.detail)}</p>
+                    <div class="mt-1.5 ml-7 sm:ml-8 pl-3 border-l-2 border-slate-200 dark:border-slate-700 ${cursorClass} message-detail" ${isClickable ? `data-full-text="${this.escapeHtml(activity.detail)}" data-title="${modalTitle}"` : ''}>
+                        <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-mono break-all leading-relaxed">${this.escapeHtml(displayText)}</p>
+                        ${isClickable ? '<p class="text-xs text-primary mt-1 font-sans">Click to view full message</p>' : ''}
                     </div>
                 `;
+            }
+
+            // Extract tool type and target from message for better display
+            let displayMessage = activity.message;
+            let toolTarget = '';
+            if (activity.type === 'tool') {
+                const match = activity.message.match(/^(read|write|edit|exec):\s*(.+)$/);
+                if (match) {
+                    const [, toolType, target] = match;
+                    displayMessage = toolType;
+                    toolTarget = target;
+                }
             }
 
             entry.innerHTML = `
@@ -365,7 +507,8 @@ class MaxDashboard {
                         <span class="text-slate-500 shrink-0 text-[10px] sm:text-xs font-mono pt-0.5">${timeStr}</span>
                         <span class="material-symbols-outlined text-lg sm:text-xl ${colorClass} shrink-0">${icon}</span>
                         <div class="flex-1 min-w-0">
-                            <span class="${colorClass} font-medium text-sm">${activity.message}</span>
+                            <span class="${colorClass} font-medium text-sm">${displayMessage}</span>
+                            ${toolTarget ? `<span class="text-slate-600 dark:text-slate-400 ml-2 font-mono text-xs break-all">${this.escapeHtml(toolTarget)}</span>` : ''}
                             ${activity.sessionId ? `<span class="text-[9px] sm:text-[10px] text-slate-500 ml-2 font-mono hidden sm:inline">${activity.sessionId.substring(0, 8)}...</span>` : ''}
                         </div>
                     </div>
@@ -378,9 +521,13 @@ class MaxDashboard {
     }
 
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        if (!text) return '';
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     clearActivityLog() {
@@ -428,6 +575,30 @@ class MaxDashboard {
         return num.toString();
     }
 }
+
+// Modal functions
+function showMessageModal(content, title = 'Message Detail') {
+    const modal = document.getElementById('messageModal');
+    const modalContent = document.getElementById('modalContent');
+    const modalTitle = document.getElementById('modal-title');
+    if (modalTitle) modalTitle.textContent = title;
+    modalContent.textContent = content;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMessageModal() {
+    const modal = document.getElementById('messageModal');
+    modal.classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeMessageModal();
+    }
+});
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {

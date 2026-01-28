@@ -16,12 +16,13 @@ Real-time monitoring dashboard for Molt.bot AI agents. Track sessions, system re
 ## Screenshots
 
 ### Desktop
-![MAX Dashboard Desktop](imgs/Screenshot1.png)
+![MAX Dashboard Desktop 1](imgs/Screenshot1.png)
+![MAX Dashboard Desktop 2](imgs/Screenshot2.png)
 
 ### Mobile
 <p align="center">
-  <img src="imgs/Screenshot2.jpg" width="45%" alt="MAX Dashboard Mobile 1">
-  <img src="imgs/Screenshot3.jpg" width="45%" alt="MAX Dashboard Mobile 2">
+  <img src="imgs/Screenshot3.jpg" width="45%" alt="MAX Dashboard Mobile 1">
+  <img src="imgs/Screenshot4.jpg" width="45%" alt="MAX Dashboard Mobile 2">
 </p>
 
 ## Features

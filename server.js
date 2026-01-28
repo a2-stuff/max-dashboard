@@ -152,13 +152,115 @@ function getMemoryUsage() {
     const free = os.freemem();
     const used = total - free;
     const usagePercent = (used / total) * 100;
-    
+
     return {
         total: (total / (1024 ** 3)).toFixed(2) + ' GB',
         used: (used / (1024 ** 3)).toFixed(2) + ' GB',
         free: (free / (1024 ** 3)).toFixed(2) + ' GB',
         percent: usagePercent.toFixed(1)
     };
+}
+
+// Cache for real-time CPU calculation
+let lastCpuSample = null;
+
+// Helper to get Molt.bot gateway process stats
+function getGatewayProcessStats() {
+    try {
+        // Find moltbot gateway process by searching for node process running moltbot
+        const psOutput = execSync('ps aux | grep -E "node.*moltbot|moltbot.*gateway" | grep -v grep | head -1', {
+            encoding: 'utf-8',
+            timeout: 5000
+        }).trim();
+
+        if (!psOutput) {
+            return { running: false };
+        }
+
+        // Parse ps aux output: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+        const parts = psOutput.split(/\s+/);
+        if (parts.length < 11) {
+            return { running: false };
+        }
+
+        const pid = parseInt(parts[1]);
+        const memPercent = parseFloat(parts[3]);
+        const rssKb = parseInt(parts[5]); // RSS in KB
+        const rssMb = (rssKb / 1024).toFixed(1);
+        
+        // Calculate real-time CPU usage from /proc/[pid]/stat
+        let cpuPercent = 0;
+        try {
+            const statFile = `/proc/${pid}/stat`;
+            if (fs.existsSync(statFile)) {
+                const stat = fs.readFileSync(statFile, 'utf-8');
+                const statParts = stat.split(' ');
+                const utime = parseInt(statParts[13]); // User CPU time
+                const stime = parseInt(statParts[14]); // System CPU time
+                const totalTime = utime + stime;
+                const now = Date.now();
+                
+                if (lastCpuSample && lastCpuSample.pid === pid) {
+                    const timeDelta = (now - lastCpuSample.timestamp) / 1000; // seconds
+                    const cpuDelta = totalTime - lastCpuSample.totalTime;
+                    const clkTck = 100; // Clock ticks per second
+                    cpuPercent = ((cpuDelta / clkTck) / timeDelta) * 100;
+                    if (cpuPercent < 0) cpuPercent = 0;
+                    if (cpuPercent > 100) cpuPercent = 100;
+                }
+                
+                lastCpuSample = { pid, totalTime, timestamp: now };
+            }
+        } catch (e) {
+            // Fall back to ps aux value
+            cpuPercent = parseFloat(parts[2]);
+        }
+
+        // Get process uptime from /proc if available
+        let uptime = null;
+        try {
+            const statFile = `/proc/${pid}/stat`;
+            if (fs.existsSync(statFile)) {
+                const stat = fs.readFileSync(statFile, 'utf-8');
+                const statParts = stat.split(' ');
+                const startTime = parseInt(statParts[21]); // Start time in clock ticks
+                const clkTck = 100; // Usually 100 on Linux
+                const uptimeSec = os.uptime() - (startTime / clkTck);
+
+                if (uptimeSec > 0) {
+                    const hours = Math.floor(uptimeSec / 3600);
+                    const mins = Math.floor((uptimeSec % 3600) / 60);
+                    uptime = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+                }
+            }
+        } catch (e) {
+            // Ignore uptime errors
+        }
+
+        // Count child processes (subagents, tools)
+        let childCount = 0;
+        try {
+            const childOutput = execSync(`pgrep -P ${pid} | wc -l`, {
+                encoding: 'utf-8',
+                timeout: 2000
+            }).trim();
+            childCount = parseInt(childOutput) || 0;
+        } catch (e) {
+            // Ignore
+        }
+
+        return {
+            running: true,
+            pid,
+            cpu: cpuPercent.toFixed(1),
+            memory: memPercent.toFixed(1),
+            rss: rssMb + ' MB',
+            uptime: uptime || 'unknown',
+            children: childCount
+        };
+    } catch (e) {
+        return { running: false };
+    }
 }
 
 // Helper to get today's log file
@@ -180,6 +282,60 @@ function formatTime(date) {
     if (hours > 0) return `${hours}h ago`;
     if (minutes > 0) return `${minutes}m ago`;
     return 'just now';
+}
+
+// Get recent assistant messages from transcript
+function getRecentAssistantMessages(sessionFile, limit = 5) {
+    const messages = [];
+    try {
+        if (!fs.existsSync(sessionFile)) {
+            // Try alternate paths
+            let altPath = sessionFile.replace('.clawdbot', '.moltbot');
+            if (!fs.existsSync(altPath)) {
+                altPath = sessionFile.replace('.moltbot', '.clawdbot');
+            }
+            if (!fs.existsSync(altPath)) return messages;
+            sessionFile = altPath;
+        }
+
+        const content = fs.readFileSync(sessionFile, 'utf-8');
+        const lines = content.trim().split('\n').filter(l => l.trim());
+        
+        // Read from end, looking for assistant messages
+        for (let i = lines.length - 1; i >= 0 && messages.length < limit; i--) {
+            try {
+                const entry = JSON.parse(lines[i]);
+                // Moltbot format: {type: "message", message: {role: "assistant", content: [...]}}
+                const msg = entry.message || entry;
+                if (msg.role === 'assistant' && msg.content) {
+                    // Extract text content from assistant message
+                    let textContent = '';
+                    if (Array.isArray(msg.content)) {
+                        for (const block of msg.content) {
+                            if (block.type === 'text' && block.text) {
+                                textContent += block.text + ' ';
+                            }
+                        }
+                    } else if (typeof msg.content === 'string') {
+                        textContent = msg.content;
+                    }
+                    
+                    const trimmed = textContent.trim();
+                    if (trimmed && trimmed !== 'HEARTBEAT_OK' && trimmed !== 'NO_REPLY' && !trimmed.startsWith('HEARTBEAT')) {
+                        messages.unshift({
+                            text: textContent.trim().substring(0, 300),
+                            timestamp: entry.timestamp || msg.timestamp || Date.now()
+                        });
+                    }
+                }
+            } catch (e) {
+                // Skip malformed lines
+            }
+        }
+    } catch (error) {
+        // Silently fail
+    }
+    return messages;
 }
 
 // Tool name descriptions
@@ -403,23 +559,68 @@ function parseRecentLogs(maxEntries = 100) {
 
                         let channelLabel = channel ? ` via ${channel.charAt(0).toUpperCase() + channel.slice(1)}` : '';
                         
-                        // Try to get the triggering message by looking back in recent logs
+                        // Try to get the triggering message from the session transcript
                         let triggerText = null;
                         if (sessionId) {
-                            // Look for recent user message in same session
-                            for (let j = i + 1; j < Math.min(i + 20, lines.length); j++) {
-                                try {
-                                    const prevLine = JSON.parse(lines[j]);
-                                    const prevData = prevLine['1'];
-                                    if (typeof prevData === 'string' && prevData.includes(sessionId)) {
-                                        // Look for user message patterns
-                                        const userTextMatch = prevData.match(/(?:message|text|content)="([^"]{1,150})"/);
-                                        if (userTextMatch && !prevData.includes('bot response') && !prevData.includes('assistant')) {
-                                            triggerText = userTextMatch[1].replace(/\\n/g, ' ').trim();
+                            try {
+                                const sessionsFile = getSessionsFile();
+                                if (sessionsFile && fs.existsSync(sessionsFile)) {
+                                    const sessions = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8'));
+                                    
+                                    // Find the session entry by searching for matching sessionId
+                                    let sessionEntry = null;
+                                    for (const [key, data] of Object.entries(sessions)) {
+                                        if (data.sessionId === sessionId) {
+                                            sessionEntry = data;
                                             break;
                                         }
                                     }
-                                } catch (e) { /* skip */ }
+                                    
+                                    if (sessionEntry && sessionEntry.sessionFile) {
+                                        let transcriptPath = sessionEntry.sessionFile;
+                                        if (!fs.existsSync(transcriptPath)) {
+                                            transcriptPath = transcriptPath.replace('.clawdbot', '.moltbot');
+                                        }
+                                        if (!fs.existsSync(transcriptPath)) {
+                                            transcriptPath = sessionEntry.sessionFile.replace('.moltbot', '.clawdbot');
+                                        }
+                                        
+                                        if (fs.existsSync(transcriptPath)) {
+                                            const transcript = fs.readFileSync(transcriptPath, 'utf-8');
+                                            const transcriptLines = transcript.trim().split('\n').filter(l => l.trim());
+                                            
+                                            // Read backwards to find most recent user message
+                                            for (let j = transcriptLines.length - 1; j >= Math.max(0, transcriptLines.length - 10); j--) {
+                                                try {
+                                                    const entry = JSON.parse(transcriptLines[j]);
+                                                    const msg = entry.message || entry;
+                                                    
+                                                    if (msg.role === 'user' && msg.content) {
+                                                        if (Array.isArray(msg.content)) {
+                                                            for (const block of msg.content) {
+                                                                if (block.type === 'text' && block.text) {
+                                                                    // Extract the actual user text, removing meta info
+                                                                    let text = block.text;
+                                                                    // Remove [Telegram ...] prefix if present
+                                                                    text = text.replace(/^\[.*?\]\s*/, '');
+                                                                    // Remove [message_id: ...] suffix if present
+                                                                    text = text.replace(/\s*\[message_id:.*?\]\s*$/, '');
+                                                                    triggerText = text.trim().substring(0, 200);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        } else if (typeof msg.content === 'string') {
+                                                            triggerText = msg.content.substring(0, 200);
+                                                        }
+                                                        if (triggerText) break;
+                                                    }
+                                                } catch (e) { /* skip */ }
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                // Silently fail
                             }
                         }
                         
@@ -758,10 +959,34 @@ function getMoltbotSessions() {
                               data.config?.model ||
                               'unknown';
 
+                // Get createdAt - check field, then file birthtime, then fall back to updatedAt
+                let createdAt = data.createdAt || data.created_at;
+                if (!createdAt && data.sessionFile) {
+                    try {
+                        let sessionFilePath = data.sessionFile;
+                        if (!fs.existsSync(sessionFilePath)) {
+                            sessionFilePath = sessionFilePath.replace('.clawdbot', '.moltbot');
+                        }
+                        if (!fs.existsSync(sessionFilePath)) {
+                            sessionFilePath = data.sessionFile.replace('.moltbot', '.clawdbot');
+                        }
+                        if (fs.existsSync(sessionFilePath)) {
+                            const stats = fs.statSync(sessionFilePath);
+                            createdAt = stats.birthtimeMs || stats.ctimeMs;
+                        }
+                    } catch (e) {
+                        // Ignore errors
+                    }
+                }
+                if (!createdAt) {
+                    createdAt = data.updatedAt || data.updated_at || data.lastUpdate;
+                }
+
                 return {
                     key: key,
                     sessionId: sessionId,
                     updatedAt: data.updatedAt || data.updated_at || data.lastUpdate,
+                    createdAt: createdAt,
                     model: model,
                     totalTokens: totalTokens,
                     contextTokens: data.contextTokens || data.context_tokens || 0,
@@ -788,7 +1013,34 @@ function getStatus() {
     const activities = parseRecentLogs(40);
     const memory = getMemoryUsage();
     const cpu = getCpuUsage();
+    const gatewayProcess = getGatewayProcessStats();
     const sessionData = getMoltbotSessions();
+    
+    // Add recent assistant messages from current session transcript
+    try {
+        const mainSessionPath = getSessionsFile();
+        if (mainSessionPath && fs.existsSync(mainSessionPath)) {
+            const sessions = JSON.parse(fs.readFileSync(mainSessionPath, 'utf-8'));
+            const mainSession = sessions['agent:main:main'];
+            if (mainSession && mainSession.sessionFile) {
+                const assistantMessages = getRecentAssistantMessages(mainSession.sessionFile, 3);
+                assistantMessages.forEach(msg => {
+                    activities.push({
+                        timestamp: new Date(msg.timestamp).toISOString(),
+                        message: 'Assistant reply',
+                        detail: msg.text,
+                        type: 'assistant',
+                        level: 'success'
+                    });
+                });
+            }
+        }
+    } catch (e) {
+        // Silently fail
+    }
+    
+    // Sort activities by timestamp descending
+    activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
     // Process session data
     let activeSessions = [];
@@ -808,6 +1060,7 @@ function getStatus() {
                 tokens: session.totalTokens || 0,
                 messages: session.messageCount || 0,
                 updated: formatTime(session.updatedAt),
+                created: formatTime(session.createdAt),
                 isAgent: session.key?.includes('agent:')
             };
             
@@ -863,8 +1116,9 @@ function getStatus() {
             const age = now - new Date(a.timestamp).getTime();
             if (age > 120000) return false; // Ignore anything older than 2 mins
 
-            // Prioritize specific activity types
-            return a.type === 'tool' || 
+            // Prioritize specific activity types (including assistant replies)
+            return a.type === 'assistant' ||
+                   a.type === 'tool' || 
                    a.type === 'thinking' || 
                    a.type === 'transcription' ||
                    a.type === 'user_message';
@@ -872,9 +1126,10 @@ function getStatus() {
 
         if (meaningfulRecent) {
             let taskDesc = meaningfulRecent.message;
-            if (meaningfulRecent.type === 'tool' && meaningfulRecent.detail) {
-                // If it's a tool, show the detail too
-                taskDesc = `${meaningfulRecent.message}`;
+            if (meaningfulRecent.detail) {
+                // Show preview of detail for assistant replies and tools
+                const preview = meaningfulRecent.detail.substring(0, 80);
+                taskDesc = `${meaningfulRecent.message}: ${preview}${meaningfulRecent.detail.length > 80 ? '...' : ''}`;
             }
             currentTask = { 
                 description: taskDesc,
@@ -885,7 +1140,7 @@ function getStatus() {
             // Check if we just completed something
             const completed = activities.find(a => {
                 const age = now - new Date(a.timestamp).getTime();
-                return age < 30000 && (a.type === 'request_complete' || a.type === 'bot_response');
+                return age < 30000 && (a.type === 'request_complete' || a.type === 'bot_response' || a.type === 'assistant');
             });
             
             if (completed) {
@@ -926,7 +1181,10 @@ function getStatus() {
         },
         
         // Gateway info
-        gateway: '127.0.0.1:18789',
+        gateway: {
+            address: '127.0.0.1:18789',
+            process: gatewayProcess
+        },
         
         // Activity
         activityLog: activities,
