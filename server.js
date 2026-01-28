@@ -570,8 +570,26 @@ function getMoltbotSessions() {
                 const totalTokens = data.totalTokens || data.total_tokens ||
                                    ((data.inputTokens || 0) + (data.outputTokens || 0)) || 0;
 
-                // Get message count - check multiple possible field names
-                const messageCount = data.messageCount || data.message_count || data.messages?.length || data.turns || 0;
+                // Get message count - count lines in session file if available
+                let messageCount = data.messageCount || data.message_count || data.messages?.length || data.turns || 0;
+                if (messageCount === 0 && data.sessionFile) {
+                    try {
+                        // Normalize path - check both .moltbot and .clawdbot locations
+                        let sessionFilePath = data.sessionFile;
+                        if (!fs.existsSync(sessionFilePath)) {
+                            sessionFilePath = sessionFilePath.replace('.clawdbot', '.moltbot');
+                        }
+                        if (!fs.existsSync(sessionFilePath)) {
+                            sessionFilePath = data.sessionFile.replace('.moltbot', '.clawdbot');
+                        }
+                        if (fs.existsSync(sessionFilePath)) {
+                            const content = fs.readFileSync(sessionFilePath, 'utf-8');
+                            messageCount = content.split('\n').filter(line => line.trim()).length;
+                        }
+                    } catch (e) {
+                        // Ignore errors reading session file
+                    }
+                }
 
                 // Get model - check multiple possible field names
                 const model = data.skillsSnapshot?.model ||
