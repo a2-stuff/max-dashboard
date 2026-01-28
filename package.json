@@ -1,0 +1,39 @@
+{
+  "name": "max-dashboard",
+  "version": "1.0.0",
+  "description": "MAX - Molt.bot Monitoring Dashboard for AI agents",
+  "main": "server.js",
+  "bin": {
+    "max-dashboard": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "moltbot",
+    "dashboard",
+    "monitoring",
+    "ai",
+    "agents",
+    "real-time"
+  ],
+  "author": "Jarod (https://github.com/a2-stuff)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/a2-stuff/max-dashboard"
+  },
+  "files": [
+    "server.js",
+    "index.html",
+    "app.js",
+    "style.css",
+    "README.md",
+    "LICENSE",
+    "imgs/"
+  ]
+}
